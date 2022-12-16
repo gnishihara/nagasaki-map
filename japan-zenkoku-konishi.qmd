@@ -1,0 +1,240 @@
+---
+title: "調査地点の作図について"
+author: "Greg Nishihara"
+date: "`r Sys.Date()`"
+format: html
+---
+
+```{r}
+#| include: false
+Sys.setlocale("LC_TIME", "en_US.UTF-8") # This is to set the server time locate to en_US.UTF-8
+```
+
+## 必要なパッケージ
+
+```{r}
+library(tidyverse)　# Essential package
+library(ggpubr)     # Publication-oriented figures
+library(kableExtra) # Tables
+library(magick)     # Imagemagick R API
+library(patchwork)  # Simplified figure tiling
+library(ggspatial)  # Essential for map-making with ggplot
+library(sf)         # Essential for map data manipulation
+library(showtext)   # I want to use google fonts in the figures
+library(mapdata)    # R mapdata
+library(ggsflabel)  # Yutani's ggplot map labeller
+library(gnnlab)     # Useful functions for the lab
+```
+
+つぎのパッケージは読まずに使っています。
+
+```{r}
+#| eval: false
+library(RColorBrewer)
+library(rmapshaper)
+library(maptools)
+```
+
+
+Noto Sans のフォントが好きなので、ここで [Google Fonts](https://fonts.google.com/) からアクセスします。
+
+```{r}
+#| eval: false
+font_add_google("Noto Sans JP", "notosans-jp") # Japanese sans-serif font
+font_add_google("Noto Sans", "notosans")       # English sans-serif font
+```
+
+Noto Fonts 類のフォントは研究室のサーバにインストール済みなので、次のコードを使いましょう。
+
+```{r}
+font_add("notosans-jp", 
+         regular = "NotoSansCJKjp-Regular.otf",
+         bold = "NotoSansCJKjp-Bold.otf")
+font_add("notosans", 
+         regular = "NotoSans-Regular.ttf",
+         bold = "NotoSans-Bold.ttf",
+         bolditalic = "NotoSans-BoldItalic.ttf",
+         italic = "NotoSans-Italic.ttf")
+```
+
+ちなみん、サーバにインストールされているフォント名の検索は次のコードでできます。
+
+```{r}
+#| eval: false
+font_files() |> as_tibble() |> 
+  select(file, family, face, ps_name) |> 
+  filter(str_detect(ps_name, "NotoSans-[Reg|Bold|Ital]|NotoSansCJKjp")) |> 
+  print(n = 50)
+```
+
+`ggplot` のデフォルトテーマの設定とフォント埋め込みは簡易にできます。。
+ここでデフォルトを設定そたら、毎回 `theme_pubr()` を `ggplot`のチェインに追加する必要はないです。
+
+```{r}
+theme_pubr(base_size = 10, base_family = "notosans-jp") |> theme_set()
+showtext_auto() # Automatically embed the Noto Sans fonts into the ggplots.
+```
+
+## シェープファイルの読み込み
+
+シェープファイル (shapefile) は地図データのことです。
+基本的の拡張子は `shp`, `shx`, `dbf`　ですが、その他に `prj` と `xml` もあります。
+
+研究室用にダウンロードした [国土交通省・国土数値情報ダウンロードサービス](https://nlftp.mlit.go.jp/ksj/index.html) のシェープファイルは `~/Lab_Data/Japan_map_data/Japan` に入っています。
+
+ところが、情報量が多くて全国の地図には適していません。
+とてもおもいです。
+ここでは、`mapdata` の地図データを用います。
+まずはデータを `SpatialPolygon` に変換し、CRS を JGD2011 に設定します。
+
+CRSには **地理座標系** と **投影座標系** の2種類があります。
+座標系にはEPSGコードもつけられています。
+
+```{r crs}
+# HTML 用テーブル
+tibble(`EPSG Code` = c(4326,6668,6677),
+       `CRS` = c("WGS84", "JGD2011", "JGD2011 / Japan Plane Rectangular CS IX"),
+       `Units` = c("degrees", "degrees", "meters")) |> 
+  kbl() |> 
+  kable_styling(bootstrap_options = c("hover"))
+```
+
+
+```{r}
+jpn = map("japan", fill = TRUE, plot = FALSE)
+```
+
+`jpn` を`SpatialPolygon` に変換する。
+
+```{r}
+jpn = maptools::map2SpatialPolygons(jpn, IDs = jpn$names)
+```
+
+
+マップデータを`st` から `sf` に変換し、CRS を JGD2011 に設定する。
+
+```{r}
+jpn = jpn |> st_as_sf(crs = st_crs(6668))
+```
+
+ポリゴンを単純化して、一つのポリゴンにまとめる。
+つぎの作業すると、crs が消えることがあるので、再び `st_as_sf()` にながします。
+
+```{r}
+jpn = jpn |> 
+  rmapshaper::ms_simplify(keep = 0.04, keep_shapes = F) |>
+  st_union() |> 
+  st_as_sf(crs = st_crs(6668))
+```
+
+```{r}
+# Use RColorBrewer color palette
+color = RColorBrewer::brewer.pal(9, "Blues")[2]
+jpn |> 
+  ggplot() + geom_sf() + 
+  theme(panel.background = element_rect(fill = color),
+        panel.grid.major = element_line(color = "white", linewidth = 0.5))
+```
+
+座標を変えて、プロットする。
+
+```{r}
+jpn |> 
+  st_transform("+proj=utm +zone=54 +datum=WGS84 +units=km") %>% 
+  ggplot() + 
+  geom_sf(color = NA, fill = "black") + 
+  theme(panel.background = element_rect(fill = color),
+        panel.grid.major = element_line(color = "white", linewidth = 0.5))
+```
+
+
+## データにGPS情報を追加する
+
+Google map からコピーしたGPSデータを次のようにまとめた。
+
+```{r}
+hirota      = matrix(rev(c(39.02402594131857, 141.78725806724896)), ncol = 2)
+matsushima  = matrix(rev(c(38.34549669653925, 141.0807915733725)), ncol = 2)
+kamigoto    = matrix(rev(c(32.98827976845565, 129.11838896005543)), ncol = 2)
+unosaki     = matrix(rev(c(39.856010, 139.817052 )), ncol = 2)
+okinawa     = matrix(rev(c(26.297604704320968, 127.8515917134318)), ncol = 2)
+
+```
+
+ここで tibble をつくる。
+
+```{r}
+gps_info = 
+  rbind(hirota, matsushima, kamigoto, unosaki, okinawa) |> 
+  as_tibble(.name_repair = ~c("long", "lat")) |> 
+  mutate(label = 
+           factor(c("Hirota", "Matsushima", "Kamigoto", 
+                    "Unosaki", "Okinawa")))
+gps_info = gps_info |> mutate(label2 = str_to_sentence(label))
+```
+
+**重要: ここで座標情報を tibble についかする。**
+
+```{r}
+gps_info = gps_info |> 
+  st_as_sf(coords = c("long", "lat"), 
+           crs = st_crs(jpn))
+```
+
+
+ここで図の範囲を求めているが、下流のコードにはつかっていない。
+メモとしてのこした。
+
+```{r}
+bb = st_bbox(jpn)
+bb[c(2, 4)] = c(29, 34)
+bbrect = tibble(xmin = bb[1],
+       xmax = bb[3],
+       ymin = bb[2],
+       ymax = bb[4])
+```
+
+調査地点つきの地図です。
+
+```{r}
+ggplot() +
+  geom_sf(fill = "grey50", data = jpn, size = 0) +
+  geom_sf_text_repel(aes(label = label), 
+               data = gps_info,
+               color = "black",
+               family = "notosans", 
+               fontface = "bold",
+               seed = 2020,
+               vjust   = c(1,1,1,1,1), 
+               hjust   = c(0,0,1,2,0),
+               nudge_x = c(1, 1, -2, -1, 1),
+               nudge_y = c( 1, 1, 2,-0,-1),
+               size = 5)  + 
+  geom_sf(data = gps_info, size = 3) +
+  geom_sf(data = gps_info, size = 2, color = "white") +
+  
+  coord_sf(xlim = bbrect |> select(xmin, xmax) |> as.numeric(), crs = 6668) +
+  # annotation_north_arrow(style = north_arrow_minimal(text_family = "notosans", 
+  #                                                    text_face = "bold",
+  #                                                    line_width = 2,
+  #                                                    text_size = 20),
+  #                        location = "tl",
+  #                        which_north = "true",
+  #                        pad_y = unit(0.3, "npc")) + 
+  theme(panel.background = element_rect(fill = "lightblue", color =NA),
+        panel.border  = element_rect(fill = NA, color =NA),
+        plot.background =  element_rect(fill = "lightblue", color =NA),
+        axis.title = element_blank(),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+地図を保存する。
+
+```{r}
+save_plot("amijimap.pdf", width = 200, height = 200)
+```
+
+
+
